@@ -4,8 +4,6 @@ import { getString } from "../utils/locale";
 import { patch as $patch$, unpatch as $unpatch$ } from "../utils/patcher";
 import {
 	getPref,
-	setPref,
-	clearPref,
 	initialiseDefaultPref,
 	getPrefGlobalName,
 } from "../utils/prefs";
@@ -15,71 +13,96 @@ import {
 	clearItemExtraProperty,
 	removeFieldValueFromExtraData,
 } from "../utils/extraField";
-const READ_STATUS_COLUMN_ID = "readstatus";
-const READ_STATUS_EXTRA_FIELD = "Read_Status";
-const READ_DATE_EXTRA_FIELD = "Read_Status_Date";
+const ITEM_TREE_DATA_KEY_PREFIX = config.addonID
+	.replaceAll("-", "_")
+	.replaceAll("@", "_at_")
+	.replaceAll(".", "_");
+const CUSTOM_COLUMN_EXTRA_FIELD_PREFIX = `${config.addonRef}_Custom_Column_`;
+const CUSTOM_COLUMN_MENU_ID_PREFIX = `${config.addonRef}-custom-column-`;
 
-export const DEFAULT_STATUS_NAMES = [
-	"New",
-	"To Read",
-	"In Progress",
-	"Read",
-	"Not Reading",
-];
-export const DEFAULT_STATUS_ICONS = ["⭐", "📙", "📖", "📗", "📕"];
+export const CUSTOM_COLUMNS_PREF = "custom-columns";
 
-export const DEFAULT_STATUS_CHANGE_FROM = ["New", "To Read"];
-export const DEFAULT_STATUS_CHANGE_TO = ["In Progress", "In Progress"];
+export type CustomColumnConfig = {
+	id: string;
+	name: string;
+	values: string[];
+};
 
-export const SHOW_ICONS_PREF = "show-icons"; // deprecated
-export const READ_STATUS_FORMAT_PREF = "read-status-format";
-export const READ_STATUS_FORMAT_HEADER_SHOW_ICON =
-	"readstatuscolumn-format-header-showicon";
-export const LABEL_NEW_ITEMS_PREF = "label-new-items";
-export const LABEL_NEW_ITEMS_PREF_DISABLED = "|none|";
-export const LABEL_ITEMS_WHEN_OPENING_FILE_PREF =
-	"label-items-when-opening-file";
-export const ENABLE_KEYBOARD_SHORTCUTS_PREF = "enable-keyboard-shortcuts";
-export const STATUS_NAME_AND_ICON_LIST_PREF = "statuses-and-icons-list";
-export const STATUS_CHANGE_ON_OPEN_ITEM_LIST_PREF =
-	"status-change-on-open-item-list";
+export const DEFAULT_CUSTOM_COLUMNS: CustomColumnConfig[] = [];
 
-enum ReadStatusFormat {
-	ShowBoth = 0,
-	ShowText = 1,
-	ShowIcon = 2,
-}
-
-function getItemReadStatus(item: Zotero.Item) {
-	const statusField = getItemExtraProperty(item, READ_STATUS_EXTRA_FIELD);
-	return statusField.length == 1 ? statusField[0] : "";
-}
-
-function setItemReadStatus(item: Zotero.Item, statusName: string) {
-	setItemExtraProperty(item, READ_STATUS_EXTRA_FIELD, statusName);
-	setItemExtraProperty(
-		item,
-		READ_DATE_EXTRA_FIELD,
-		new Date(Date.now()).toISOString(),
-	);
-	void item.saveTx();
-}
-
-function setItemsReadStatus(items: Zotero.Item[], statusName: string) {
-	for (const item of items) {
-		setItemReadStatus(item, statusName);
+export function parseCustomColumnsPref(
+	prefValue: string | undefined,
+): CustomColumnConfig[] {
+	if (!prefValue) {
+		return [...DEFAULT_CUSTOM_COLUMNS];
+	}
+	try {
+		const parsed = JSON.parse(prefValue) as CustomColumnConfig[];
+		if (!Array.isArray(parsed)) {
+			return [...DEFAULT_CUSTOM_COLUMNS];
+		}
+		return parsed
+			.filter(
+				(column) =>
+					typeof column.id === "string" &&
+					typeof column.name === "string" &&
+					Array.isArray(column.values),
+			)
+			.map((column) => ({
+				id: column.id.trim(),
+				name: column.name.trim(),
+				values: column.values
+					.filter((value) => typeof value === "string")
+					.map((value) => value.trim())
+					.filter((value) => value.length > 0),
+			}))
+			.filter((column) => column.id && column.name);
+	} catch (error) {
+		return [...DEFAULT_CUSTOM_COLUMNS];
 	}
 }
 
-function setSelectedItemsReadStatus(statusName: string) {
-	setItemsReadStatus(getSelectedItems(), statusName);
+export function serializeCustomColumnsPref(columns: CustomColumnConfig[]) {
+	return JSON.stringify(columns);
 }
 
-function clearSelectedItemsReadStatus() {
+function getCustomColumnExtraFieldName(columnId: string) {
+	return `${CUSTOM_COLUMN_EXTRA_FIELD_PREFIX}${columnId}`;
+}
+
+function getItemCustomColumnValue(item: Zotero.Item, columnId: string) {
+	const fieldName = getCustomColumnExtraFieldName(columnId);
+	const values = getItemExtraProperty(item, fieldName);
+	return values.length === 1 ? values[0] : "";
+}
+
+function setItemCustomColumnValue(
+	item: Zotero.Item,
+	columnId: string,
+	value: string,
+) {
+	setItemExtraProperty(item, getCustomColumnExtraFieldName(columnId), value);
+	void item.saveTx();
+}
+
+function setItemsCustomColumnValue(
+	items: Zotero.Item[],
+	columnId: string,
+	value: string,
+) {
+	for (const item of items) {
+		setItemCustomColumnValue(item, columnId, value);
+	}
+}
+
+function setSelectedItemsCustomColumnValue(columnId: string, value: string) {
+	setItemsCustomColumnValue(getSelectedItems(), columnId, value);
+}
+
+function clearSelectedItemsCustomColumnValue(columnId: string) {
 	const items = getSelectedItems();
 	for (const item of items) {
-		clearItemExtraProperty(item, READ_STATUS_EXTRA_FIELD);
-		clearItemExtraProperty(item, READ_DATE_EXTRA_FIELD);
+		clearItemExtraProperty(item, getCustomColumnExtraFieldName(columnId));
 		void item.saveTx();
 	}
 }
@@ -91,185 +114,50 @@ function getSelectedItems() {
 	return ZoteroPane.getSelectedItems().filter((item) => item.isRegularItem());
 }
 
-export const FORBIDDEN_PREF_STRING_CHARACTERS = new Set(":;|");
-
-export function prefStringToList(prefString: string) {
-	const [statusString, iconString] = prefString.split("|");
-	return [statusString.split(";"), iconString.split(";")];
-}
-
-export function listToPrefString(stringList: string[], iconList: string[]) {
-	return stringList.join(";") + "|" + iconList.join(";");
-}
-
 export default class ZoteroReadingList {
-	itemAddedListenerID?: string;
-	fileOpenedListenerID?: string;
-	itemTreeReadStatusColumnId?: string | false;
+	itemTreeCustomColumnIds?: Array<string | false>;
+	customColumnMenuIds?: string[];
 	preferenceUpdateObservers?: symbol[];
-	statusNames: string[];
-	statusIcons: string[];
+	customColumns: CustomColumnConfig[];
 
 	constructor() {
 		this.initialiseDefaultPreferences();
-		[this.statusNames, this.statusIcons] = prefStringToList(
-			getPref(STATUS_NAME_AND_ICON_LIST_PREF)! as string,
+		this.customColumns = parseCustomColumnsPref(
+			getPref(CUSTOM_COLUMNS_PREF) as string,
 		);
 
-		this.addReadStatusColumn();
+		this.addCustomColumns();
 		this.addPreferencesMenu();
-		this.addRightClickMenuPopup();
-
-		if (getPref(ENABLE_KEYBOARD_SHORTCUTS_PREF)) {
-			this.addKeyboardShortcutListener();
-		}
-		if (getPref(LABEL_NEW_ITEMS_PREF) != LABEL_NEW_ITEMS_PREF_DISABLED) {
-			this.addNewItemLabeller();
-		}
-		if (getPref(LABEL_ITEMS_WHEN_OPENING_FILE_PREF)) {
-			this.addFileOpenedListener();
-		}
-
+		this.addCustomColumnMenus();
 		this.addPreferenceUpdateObservers();
-		this.removeReadStatusFromExports();
+		this.removeCustomColumnsFromExports();
 	}
 
 	public unload() {
-		this.removeReadStatusColumn();
+		this.removeCustomColumns();
 		this.removePreferenceMenu();
-		this.removeRightClickMenu();
-		this.removeKeyboardShortcutListener();
-		this.removeNewItemLabeller();
-		this.removeFileOpenedListener();
+		this.removeCustomColumnMenus();
 		this.removePreferenceUpdateObservers();
 		this.unpatchExportFunction();
 	}
 
 	initialiseDefaultPreferences() {
-		// for migrating from old format pref (show icon or not) to new format pref (show both, text, or icon)
-		// show icon -> show both
-		// don't show icon -> show text
-		// otherwise, default is show both
-		const oldReadStatusColumnFormatPref_showIcons =
-			getPref(SHOW_ICONS_PREF);
-		if (
-			typeof oldReadStatusColumnFormatPref_showIcons == "boolean" &&
-			!oldReadStatusColumnFormatPref_showIcons
-		) {
-			initialiseDefaultPref(
-				READ_STATUS_FORMAT_PREF,
-				ReadStatusFormat.ShowText,
-			);
-		} else {
-			initialiseDefaultPref(
-				READ_STATUS_FORMAT_PREF,
-				ReadStatusFormat.ShowBoth,
-			);
-		}
-		initialiseDefaultPref(READ_STATUS_FORMAT_HEADER_SHOW_ICON, false);
-		initialiseDefaultPref(ENABLE_KEYBOARD_SHORTCUTS_PREF, true);
-		initialiseDefaultPref(LABEL_ITEMS_WHEN_OPENING_FILE_PREF, false);
 		initialiseDefaultPref(
-			STATUS_NAME_AND_ICON_LIST_PREF,
-			listToPrefString(DEFAULT_STATUS_NAMES, DEFAULT_STATUS_ICONS),
+			CUSTOM_COLUMNS_PREF,
+			serializeCustomColumnsPref(DEFAULT_CUSTOM_COLUMNS),
 		);
-		initialiseDefaultPref(
-			STATUS_CHANGE_ON_OPEN_ITEM_LIST_PREF,
-			listToPrefString(
-				DEFAULT_STATUS_CHANGE_FROM,
-				DEFAULT_STATUS_CHANGE_TO,
-			),
-		);
-		// for migrating from old label new items pref (true or false) to new format pref (disabled or choose read status to use)
-		// true -> automatically label as first read status
-		// false -> disabled
-		const oldLabelNewItemsPref = getPref(LABEL_NEW_ITEMS_PREF);
-		if (typeof oldLabelNewItemsPref == "boolean") {
-			// need to clear then set Pref when changing type from bool to string
-			clearPref(LABEL_NEW_ITEMS_PREF);
-			if (oldLabelNewItemsPref) {
-				setPref(
-					LABEL_NEW_ITEMS_PREF,
-					prefStringToList(
-						getPref(STATUS_NAME_AND_ICON_LIST_PREF)! as string,
-					)[0][0],
-				);
-			} else {
-				setPref(LABEL_NEW_ITEMS_PREF, LABEL_NEW_ITEMS_PREF_DISABLED);
-			}
-		} else {
-			initialiseDefaultPref(
-				LABEL_NEW_ITEMS_PREF,
-				LABEL_NEW_ITEMS_PREF_DISABLED,
-			);
-		}
 	}
 
 	addPreferenceUpdateObservers() {
 		this.preferenceUpdateObservers = [
 			Zotero.Prefs.registerObserver(
-				getPrefGlobalName(ENABLE_KEYBOARD_SHORTCUTS_PREF),
-				(value: boolean) => {
-					if (value) {
-						this.addKeyboardShortcutListener();
-					} else {
-						this.removeKeyboardShortcutListener();
-					}
-				},
-				true,
-			),
-			Zotero.Prefs.registerObserver(
-				getPrefGlobalName(LABEL_NEW_ITEMS_PREF),
+				getPrefGlobalName(CUSTOM_COLUMNS_PREF),
 				(value: string) => {
-					if (value == LABEL_NEW_ITEMS_PREF_DISABLED) {
-						this.removeNewItemLabeller();
-					} else if (typeof this.itemAddedListenerID == "undefined") {
-						this.addNewItemLabeller();
-					}
-				},
-				true,
-			),
-			Zotero.Prefs.registerObserver(
-				getPrefGlobalName(LABEL_ITEMS_WHEN_OPENING_FILE_PREF),
-				(value: boolean) => {
-					if (value) {
-						this.addFileOpenedListener();
-					} else {
-						this.removeFileOpenedListener();
-					}
-				},
-				true,
-			),
-			// refresh read status column on format change
-			Zotero.Prefs.registerObserver(
-				getPrefGlobalName(READ_STATUS_FORMAT_PREF),
-				(value: boolean) => {
-					this.removeReadStatusColumn();
-					this.removeRightClickMenu();
-					this.addReadStatusColumn();
-					this.addRightClickMenuPopup();
-				},
-				true,
-			),
-			Zotero.Prefs.registerObserver(
-				getPrefGlobalName(READ_STATUS_FORMAT_HEADER_SHOW_ICON),
-				(value: boolean) => {
-					this.removeReadStatusColumn();
-					this.addReadStatusColumn();
-				},
-				true,
-			),
-			Zotero.Prefs.registerObserver(
-				getPrefGlobalName(STATUS_NAME_AND_ICON_LIST_PREF),
-				(value: string) => {
-					[this.statusNames, this.statusIcons] =
-						prefStringToList(value);
-					this.removeRightClickMenu();
-					this.addRightClickMenuPopup();
-					this.removeKeyboardShortcutListener();
-					this.addKeyboardShortcutListener();
-					this.removeReadStatusColumn();
-					this.addReadStatusColumn();
+					this.customColumns = parseCustomColumnsPref(value);
+					this.removeCustomColumnMenus();
+					this.removeCustomColumns();
+					this.addCustomColumns();
+					this.addCustomColumnMenus();
 				},
 				true,
 			),
@@ -286,23 +174,17 @@ export default class ZoteroReadingList {
 		}
 	}
 
-	addReadStatusColumn() {
-		const formatStatusName = (statusName: string) =>
-			this.formatStatusName(statusName);
-		this.itemTreeReadStatusColumnId = Zotero.ItemTreeManager.registerColumn(
-			{
-				dataKey: `${config.addonID.replaceAll("-", "_").replaceAll("@", "_at_").replaceAll(".", "_")}_${READ_STATUS_COLUMN_ID}`,
-				label: getString("read-status"),
-				// If we just want to show the icon, overwrite the label with htmlLabel (#40)
-				htmlLabel: getPref(READ_STATUS_FORMAT_HEADER_SHOW_ICON)
-					? `<span class="icon icon-css icon-16" style="background: url(chrome://${config.addonRef}/content/icons/favicon.png) content-box no-repeat center/contain;" />`
-					: undefined,
-				pluginID: "", //config.addonID,
+	addCustomColumns() {
+		this.itemTreeCustomColumnIds = this.customColumns.map((column) =>
+			Zotero.ItemTreeManager.registerColumn({
+				dataKey: `${ITEM_TREE_DATA_KEY_PREFIX}_custom_${column.id}`,
+				label: column.name,
+				pluginID: config.addonID,
 				dataProvider: (item: Zotero.Item, dataKey: string) => {
-					return item.isRegularItem() ? getItemReadStatus(item) : "";
+					return item.isRegularItem()
+						? getItemCustomColumnValue(item, column.id)
+						: "";
 				},
-				// if we put the icon in the dataprovider, it only gets updated when the read status changes
-				// putting the icon in the render function updates when the row is clicked or column is sorted
 				renderCell: function (
 					index: number,
 					data: string,
@@ -313,7 +195,7 @@ export default class ZoteroReadingList {
 						"span",
 					);
 					text.className = "cell-text";
-					text.innerText = formatStatusName(data);
+					text.innerText = data;
 
 					const cell = document.createElementNS(
 						"http://www.w3.org/1999/xhtml",
@@ -325,41 +207,18 @@ export default class ZoteroReadingList {
 					return cell;
 				},
 				zoteroPersist: ["width", "hidden", "sortDirection"],
-			},
+			}),
 		);
 	}
 
-	/**
-	 * Format name of status to localise text and include icon if enabled.
-	 * @param {string} statusName - The name of the status.
-	 * @returns {String} values - Name of the status, possibly prefixed with the corresponding icon.
-	 */
-	formatStatusName(statusName: string): string {
-		switch (getPref(READ_STATUS_FORMAT_PREF) as ReadStatusFormat) {
-			case ReadStatusFormat.ShowBoth: {
-				const statusIndex = this.statusNames.indexOf(statusName);
-				return statusIndex > -1
-					? `${this.statusIcons[statusIndex]} ${statusName}`
-					: statusName;
+	removeCustomColumns() {
+		if (this.itemTreeCustomColumnIds) {
+			for (const columnId of this.itemTreeCustomColumnIds) {
+				if (columnId) {
+					Zotero.ItemTreeManager.unregisterColumn(columnId);
+				}
 			}
-			case ReadStatusFormat.ShowText: {
-				return statusName;
-			}
-			case ReadStatusFormat.ShowIcon: {
-				const statusIndex = this.statusNames.indexOf(statusName);
-				return statusIndex > -1
-					? `${this.statusIcons[statusIndex]}`
-					: statusName;
-			}
-		}
-	}
-
-	removeReadStatusColumn() {
-		if (this.itemTreeReadStatusColumnId) {
-			Zotero.ItemTreeManager.unregisterColumn(
-				this.itemTreeReadStatusColumnId,
-			);
-			this.itemTreeReadStatusColumnId = undefined;
+			this.itemTreeCustomColumnIds = undefined;
 		}
 	}
 
@@ -378,172 +237,61 @@ export default class ZoteroReadingList {
 		Zotero.PreferencePanes.unregister(config.addonID);
 	}
 
-	addRightClickMenuPopup() {
-		ztoolkit.Menu.register("item", {
-			id: "zotero-reading-list-right-click-item-menu",
-			tag: "menu",
-			label: getString("menupopup-label"),
-			children: [
+	addCustomColumnMenus() {
+		this.customColumnMenuIds = [];
+		for (const column of this.customColumns) {
+			const menuId = `${CUSTOM_COLUMN_MENU_ID_PREFIX}${column.id}`;
+			const menuItems: MenuitemOptions[] = [
 				{
 					tag: "menuitem",
 					label: getString("status-none"),
 					commandListener: (event) =>
-						void clearSelectedItemsReadStatus(),
+						void clearSelectedItemsCustomColumnValue(column.id),
 				} as MenuitemOptions,
 			].concat(
-				this.statusNames.map((status_name: string) => {
+				column.values.map((value) => {
 					return {
 						tag: "menuitem",
-						label: this.formatStatusName(status_name),
+						label: value,
 						commandListener: (event) =>
-							setSelectedItemsReadStatus(status_name),
+							void setSelectedItemsCustomColumnValue(
+								column.id,
+								value,
+							),
 					};
 				}),
-			),
-			getVisibility: (element, event) => {
-				return getSelectedItems().length > 0;
-			},
-		});
-	}
-
-	removeRightClickMenu() {
-		ztoolkit.Menu.unregister("zotero-reading-list-right-click-item-menu");
-	}
-
-	addNewItemLabeller() {
-		const addItemHandler = (
-			action: _ZoteroTypes.Notifier.Event,
-			type: _ZoteroTypes.Notifier.Type,
-			ids: string[] | number[],
-			extraData: _ZoteroTypes.anyObj,
-		) => {
-			if (action == "add") {
-				const items = Zotero.Items.get(ids).filter((item) =>
-					item.isRegularItem(),
-				);
-
-				setItemsReadStatus(
-					items,
-					getPref(LABEL_NEW_ITEMS_PREF)! as string,
-				);
-			}
-		};
-
-		this.itemAddedListenerID = Zotero.Notifier.registerObserver(
-			{
-				notify(...args) {
-					// eslint-disable-next-line prefer-spread
-					addItemHandler.apply(null, args);
+			);
+			ztoolkit.Menu.register("item", {
+				id: menuId,
+				tag: "menu",
+				label: column.name,
+				children: menuItems,
+				getVisibility: (element, event) => {
+					return getSelectedItems().length > 0;
 				},
-			},
-			["item"],
-			"zotero-reading-list",
-			1,
+			});
+			this.customColumnMenuIds.push(menuId);
+		}
+	}
+
+	removeCustomColumnMenus() {
+		if (this.customColumnMenuIds) {
+			for (const menuId of this.customColumnMenuIds) {
+				ztoolkit.Menu.unregister(menuId);
+			}
+			this.customColumnMenuIds = undefined;
+		}
+	}
+
+	getCustomColumnExtraFieldNames() {
+		return this.customColumns.map((column) =>
+			getCustomColumnExtraFieldName(column.id),
 		);
 	}
 
-	removeNewItemLabeller() {
-		if (this.itemAddedListenerID) {
-			Zotero.Notifier.unregisterObserver(this.itemAddedListenerID);
-			this.itemAddedListenerID = undefined;
-		}
-	}
-
-	addFileOpenedListener() {
-		const fileOpenHandler = (
-			action: string,
-			type: string,
-			ids: string[] | number[],
-			extraData: any,
-		) => {
-			if (action == "open") {
-				const items = Zotero.Items.getTopLevel(
-					Zotero.Items.get(ids as number[]),
-				);
-
-				const [statusFrom, statusTo] = prefStringToList(
-					getPref(STATUS_CHANGE_ON_OPEN_ITEM_LIST_PREF) as string,
-				);
-
-				for (const item of items) {
-					const itemReadStatusIndex = statusFrom.indexOf(
-						getItemReadStatus(item),
-					);
-					if (itemReadStatusIndex > -1) {
-						setItemReadStatus(item, statusTo[itemReadStatusIndex]);
-					}
-				}
-			}
-		};
-
-		this.fileOpenedListenerID = Zotero.Notifier.registerObserver(
-			{
-				notify(...args) {
-					// eslint-disable-next-line prefer-spread
-					fileOpenHandler.apply(null, args);
-				},
-			},
-			["file"],
-			"zotero-reading-list",
-			1,
-		);
-	}
-
-	removeFileOpenedListener() {
-		if (this.fileOpenedListenerID) {
-			Zotero.Notifier.unregisterObserver(this.fileOpenedListenerID);
-			this.fileOpenedListenerID = undefined;
-		}
-	}
-
-	keyboardEventHandler = (keyboardEvent: KeyboardEvent) => {
-		// Check modifiers - want Alt+{1,2,3,4,5} to label the currently selected items
-		// Or Alt+0 to clear the current read status
-		// Need to use keyboard event `code` instead of `key` to support different keyboard
-		// layouts, as well as fix problems with Mac #9 #53
-		const possibleKeyCombinations: Map<string, number> = new Map();
-		for (let num = 0; num < this.statusNames.length; num++) {
-			possibleKeyCombinations.set(`Digit${num + 1}`, num);
-			possibleKeyCombinations.set(`Numpad${num + 1}`, num);
-		}
-		const clearStatusKeyCombinations = ["Digit0", "Numpad0"];
-		if (
-			!keyboardEvent.ctrlKey &&
-			!keyboardEvent.shiftKey &&
-			keyboardEvent.altKey
-		) {
-			if (possibleKeyCombinations.has(keyboardEvent.code)) {
-				const selectedStatus =
-					this.statusNames[
-						possibleKeyCombinations.get(keyboardEvent.code)!
-					];
-				void setSelectedItemsReadStatus(selectedStatus);
-			} else if (
-				clearStatusKeyCombinations.includes(keyboardEvent.code)
-			) {
-				void clearSelectedItemsReadStatus();
-			}
-		}
-	};
-
-	addKeyboardShortcutListener() {
-		// disable Zotero's column sorting (also uses Alt+Num shortcut keys) #30
-		document
-			.getElementById("sortSubmenuKeys")
-			?.setAttribute("disabled", "true");
-		// different approach compared to Zutilo https://github.com/wshanks/Zutilo/issues/71#issuecomment-360986808
-		document.addEventListener("keydown", this.keyboardEventHandler);
-	}
-
-	removeKeyboardShortcutListener() {
-		document.removeEventListener("keydown", this.keyboardEventHandler);
-		// reenable Zotero's column sorting
-		document
-			.getElementById("sortSubmenuKeys")
-			?.setAttribute("disabled", "false");
-	}
-
-	removeReadStatusFromExports() {
+	removeCustomColumnsFromExports() {
+		const getCustomColumnExtraFieldNames = () =>
+			this.getCustomColumnExtraFieldNames();
 		// need to specify that `this` is an Object (ie. it's Zotero.Utilities.Internal) for TS to be happy
 		$patch$(
 			Zotero.Utilities.Internal,
@@ -562,14 +310,12 @@ export default class ZoteroReadingList {
 					if (serializedItem.extra) {
 						// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
 						let extraText = serializedItem.extra as string;
-						extraText = removeFieldValueFromExtraData(
-							extraText,
-							READ_STATUS_EXTRA_FIELD,
-						);
-						extraText = removeFieldValueFromExtraData(
-							extraText,
-							READ_DATE_EXTRA_FIELD,
-						);
+						for (const fieldName of getCustomColumnExtraFieldNames()) {
+							extraText = removeFieldValueFromExtraData(
+								extraText,
+								fieldName,
+							);
+						}
 						// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
 						serializedItem.extra = extraText;
 					}
